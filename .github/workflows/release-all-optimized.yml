@@ -97,9 +97,23 @@ jobs:
           fi
           VERSION="${VERSION#v}"
           
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+          # Allow X.Y or X.Y.Z format, optionally with prerelease suffix
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
             echo "❌ Invalid version format: $VERSION"
+            echo "   Expected: X.Y.Z or X.Y, optionally with -alpha.N, -beta.N, -rc.N"
             exit 1
+          fi
+          
+          # Normalize to X.Y.Z format (add .0 if only X.Y)
+          if [[ ! "$VERSION" =~ \.[0-9]+\. ]] && [[ ! "$VERSION" =~ \.[0-9]+-. ]]; then
+            # Has only one dot (X.Y format), add .0
+            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+)(-(.*))$ ]]; then
+              # Has prerelease: 1.1-alpha.1 -> 1.1.0-alpha.1
+              VERSION="${BASH_REMATCH[1]}.0${BASH_REMATCH[2]}"
+            else
+              # No prerelease: 1.1 -> 1.1.0
+              VERSION="$VERSION.0"
+            fi
           fi
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
