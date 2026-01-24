@@ -155,7 +155,7 @@ jobs:
             -PversionCode=$(echo $((2024000 + $(git rev-list --count HEAD))))
 
       - name: Sign APK and AAB
-        if: secrets.ANDROID_KEYSTORE_BASE64 != ''
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         run: |
           # Decode keystore
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
@@ -219,7 +219,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to S3 (if configured)
-        if: secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/')
+        if: ${{ secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/') }}
         run: |
           apt-get update
           apt-get install -y awscli
@@ -236,7 +236,7 @@ jobs:
     name: Publish to Google Play
     needs: build-android
     runs-on: ubuntu-latest
-    if: secrets.GOOGLE_PLAY_SERVICE_ACCOUNT != '' && startsWith(github.ref, 'refs/tags/')
+    if: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT != '' && startsWith(github.ref, 'refs/tags/') }}
 
     steps:
       - name: Download AAB artifacts

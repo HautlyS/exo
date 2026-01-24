@@ -167,7 +167,7 @@ jobs:
           }
 
       - name: Sign executables (if code signing cert available)
-        if: secrets.WINDOWS_CODE_SIGN_CERT != ''
+        if: ${{ secrets.WINDOWS_CODE_SIGN_CERT != '' }}
         shell: powershell
         run: |
           # Import certificate
@@ -219,7 +219,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to S3 (if configured)
-        if: secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/')
+        if: ${{ secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/') }}
         shell: powershell
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}

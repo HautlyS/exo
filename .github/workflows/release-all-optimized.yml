@@ -603,7 +603,7 @@ jobs:
           EOF
 
       - name: 🔔 Slack notification
-        if: secrets.SLACK_WEBHOOK != ''
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
         run: |
           curl -X POST "${{ secrets.SLACK_WEBHOOK }}" \
             -H 'Content-Type: application/json' \

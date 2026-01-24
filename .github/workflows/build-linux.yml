@@ -192,7 +192,7 @@ jobs:
           fi
 
       - name: Sign package (GPG)
-        if: secrets.GPG_PRIVATE_KEY != ''
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         run: |
           mkdir -p ~/.gnupg
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --yes
@@ -225,7 +225,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to S3 (if configured)
-        if: secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/')
+        if: ${{ secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/') }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -317,7 +317,7 @@ jobs:
           echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Upload to Launchpad PPA (Ubuntu)
-        if: secrets.LAUNCHPAD_CREDENTIALS != ''
+        if: ${{ secrets.LAUNCHPAD_CREDENTIALS != '' }}
         run: |
           apt-get update
           apt-get install -y dput devscripts
@@ -326,7 +326,7 @@ jobs:
           echo "Failed to upload to PPA (may not be configured)"
 
       - name: Upload to Fedora COPR
-        if: secrets.COPR_CREDENTIALS != ''
+        if: ${{ secrets.COPR_CREDENTIALS != '' }}
         run: |
           pip3 install copr-cli
           cd artifacts
@@ -334,7 +334,7 @@ jobs:
           echo "Failed to upload to COPR (may not be configured)"
 
       - name: Prepare AUR submission (Arch Linux)
-        if: secrets.AUR_GIT_SSH_KEY != ''
+        if: ${{ secrets.AUR_GIT_SSH_KEY != '' }}
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.AUR_GIT_SSH_KEY }}" | base64 -d > ~/.ssh/aur_key
@@ -348,14 +348,14 @@ jobs:
           git push || echo "Failed to push to AUR (may not be configured)"
 
       - name: Prepare Flatpak submission
-        if: secrets.FLATHUB_GITHUB_TOKEN != ''
+        if: ${{ secrets.FLATHUB_GITHUB_TOKEN != '' }}
         run: |
           # Submit to Flathub via pull request
           echo "Flatpak submission would be automated here"
           # This typically involves a PR to github.com/flathub/io.exo.EXO
 
       - name: Upload to Snap Store
-        if: secrets.SNAPCRAFT_STORE_CREDENTIALS != ''
+        if: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS != '' }}
         run: |
           apt-get update
           apt-get install -y snapcraft

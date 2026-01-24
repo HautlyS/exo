@@ -498,7 +498,7 @@ jobs:
     name: Publish to APT (Debian/Ubuntu)
     needs: [create-release, preflight]
     runs-on: ubuntu-latest
-    if: success() && secrets.LAUNCHPAD_CREDENTIALS != ''
+    if: ${{ success() && secrets.LAUNCHPAD_CREDENTIALS != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -527,7 +527,7 @@ jobs:
     name: Publish to DNF (Fedora/RHEL)
     needs: [create-release, preflight]
     runs-on: ubuntu-latest
-    if: success() && secrets.COPR_CREDENTIALS != ''
+    if: ${{ success() && secrets.COPR_CREDENTIALS != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -553,7 +553,7 @@ jobs:
     name: Publish to Snap Store
     needs: [create-release, preflight]
     runs-on: ubuntu-latest
-    if: success() && secrets.SNAPCRAFT_STORE_CREDENTIALS != ''
+    if: ${{ success() && secrets.SNAPCRAFT_STORE_CREDENTIALS != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -577,7 +577,7 @@ jobs:
     name: Publish to Google Play
     needs: [create-release, preflight]
     runs-on: ubuntu-latest
-    if: success() && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
+    if: ${{ success() && secrets.GOOGLE_PLAY_SERVICE_ACCOUNT != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -600,7 +600,7 @@ jobs:
     name: Publish to App Store
     needs: [create-release, preflight]
     runs-on: macos-latest
-    if: success() && secrets.APP_STORE_CONNECT_API_KEY != ''
+    if: ${{ success() && secrets.APP_STORE_CONNECT_API_KEY != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -647,7 +647,7 @@ jobs:
           cat summary.txt
 
       - name: Send Slack notification
-        if: secrets.SLACK_WEBHOOK != ''
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
         run: |
           curl -X POST -H 'Content-type: application/json' \
             --data "{\"text\":\"🚀 Release v${{ needs.preflight.outputs.version }} published to all platforms\"}" \
