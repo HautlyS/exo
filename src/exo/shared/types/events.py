@@ -5,6 +5,7 @@ from pydantic import Field
 from exo.shared.topology import Connection
 from exo.shared.types.chunks import GenerationChunk, InputImageChunk
 from exo.shared.types.common import CommandId, Id, NodeId, SessionId
+from exo.shared.types.state import DeviceGPUState
 from exo.shared.types.tasks import Task, TaskId, TaskStatus
 from exo.shared.types.worker.downloads import DownloadProgress
 from exo.shared.types.worker.instances import Instance, InstanceId
@@ -109,6 +110,29 @@ class TopologyEdgeDeleted(BaseEvent):
     conn: Connection
 
 
+# GPU telemetry events for heterogeneous cluster monitoring
+class DeviceGPUStateUpdated(BaseEvent):
+    """GPU device state update (memory, thermal, utilization).
+    
+    Emitted by workers periodically or on state change.
+    Master uses to track gpu_device_state for CSP placement decisions.
+    """
+    device_state: DeviceGPUState
+
+
+class GPUBandwidthMeasured(BaseEvent):
+    """P2P bandwidth measurement between two devices.
+    
+    Emitted when network topology measurements complete.
+    Master uses to refine P2P transfer estimates.
+    """
+    source_device_id: str
+    dest_device_id: str
+    bandwidth_mbps: float
+    latency_ms: float
+    measurement_count: int
+
+
 Event = (
     TestEvent
     | TaskCreated
@@ -127,6 +151,8 @@ Event = (
     | InputChunkReceived
     | TopologyEdgeCreated
     | TopologyEdgeDeleted
+    | DeviceGPUStateUpdated
+    | GPUBandwidthMeasured
 )
 
 

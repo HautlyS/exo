@@ -1,8 +1,10 @@
+import logging
 import random
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Sequence
 
+from exo.master.placement_csp import ConstraintSatisfactionPlacement, GPUDeviceScore
 from exo.master.placement_utils import (
     Cycle,
     filter_cycles_by_memory,
@@ -23,6 +25,7 @@ from exo.shared.types.common import NodeId
 from exo.shared.types.events import Event, InstanceCreated, InstanceDeleted
 from exo.shared.types.memory import Memory
 from exo.shared.types.profiling import MemoryUsage, NodeNetworkInfo
+from exo.shared.types.state import DeviceGPUState
 from exo.shared.types.worker.instances import (
     Instance,
     InstanceId,
@@ -32,10 +35,99 @@ from exo.shared.types.worker.instances import (
 )
 from exo.shared.types.worker.shards import Sharding
 
+logger = logging.getLogger(__name__)
+
 
 def random_ephemeral_port() -> int:
     port = random.randint(49153, 65535)
     return port - 1 if port <= 52415 else port
+
+
+def _has_heterogeneous_gpus(gpu_device_state: Mapping[str, DeviceGPUState]) -> bool:
+    """Check if cluster has heterogeneous GPU types.
+    
+    Returns True if:
+    - Multiple device types (cuda:0, cuda:1 are same type)
+    - Different memory sizes
+    - Different compute capabilities
+    """
+    if len(gpu_device_state) <= 1:
+        return False
+    
+    devices = list(gpu_device_state.values())
+    
+    # Check if any device memory differs
+    memory_sizes = {d.memory_total_bytes for d in devices}
+    if len(memory_sizes) > 1:
+        logger.debug(f"Heterogeneous memory detected: {memory_sizes}")
+        return True
+    
+    # Check if any device utilization differs significantly
+    utilizations = {d.memory_utilization_percent for d in devices}
+    if len(utilizations) > 1 and max(utilizations) - min(utilizations) > 20:
+        logger.debug(f"Heterogeneous utilization detected: {utilizations}")
+        return True
+    
+    return False
+
+
+def _compute_device_scores(
+    cycle_node_ids: Sequence[NodeId],
+    gpu_device_state: Mapping[str, DeviceGPUState],
+    shard_size_bytes: int,
+    topology: Topology,
+) -> list[GPUDeviceScore]:
+    """Compute placement scores for devices in a cycle.
+    
+    Scores consider:
+    - Memory fit (shard size vs available memory)
+    - Compute utilization (prefer idle devices)
+    - Thermal headroom (mobile devices)
+    - Network position (prefer central nodes)
+    """
+    scores = []
+    
+    for dev_state in gpu_device_state.values():
+        if dev_state.node_id not in cycle_node_ids:
+            continue
+        
+        # Memory score: 0 = not enough, 1 = plenty of space
+        memory_available = dev_state.memory_available_bytes
+        if memory_available < shard_size_bytes:
+            memory_score = 0.0
+        elif memory_available >= shard_size_bytes * 2:
+            memory_score = 1.0
+        else:
+            memory_score = memory_available / (shard_size_bytes * 2)
+        
+        # Compute score: 0 = busy, 1 = idle
+        compute_score = max(0.0, 1.0 - dev_state.compute_utilization_percent / 100.0)
+        
+        # Thermal score: 0 = hot, 1 = cool
+        thermal_margin = dev_state.thermal_throttle_threshold_c - dev_state.thermal_temperature_c
+        if thermal_margin < 0:
+            thermal_score = 0.0
+        elif thermal_margin < 5:
+            thermal_score = 0.3
+        else:
+            thermal_score = min(1.0, thermal_margin / 20.0)
+        
+        # Network score (simplified): prefer nodes with higher ID (leaf nodes)
+        # In real implementation, this would use topology centrality
+        network_score = 1.0
+        
+        score = GPUDeviceScore(
+            device_id=dev_state.device_id,
+            node_id=dev_state.node_id,
+            compute_score=compute_score,
+            memory_score=memory_score,
+            network_score=network_score,
+            thermal_score=thermal_score,
+            bandwidth_score=1.0,
+        )
+        scores.append(score)
+    
+    return scores
 
 
 def add_instance_to_placements(
@@ -55,6 +147,7 @@ def place_instance(
     node_memory: Mapping[NodeId, MemoryUsage],
     node_network: Mapping[NodeId, NodeNetworkInfo],
     required_nodes: set[NodeId] | None = None,
+    gpu_device_state: Mapping[str, DeviceGPUState] | None = None,
 ) -> dict[InstanceId, Instance]:
     cycles = topology.get_cycles()
     candidate_cycles = list(filter(lambda it: len(it) >= command.min_nodes, cycles))

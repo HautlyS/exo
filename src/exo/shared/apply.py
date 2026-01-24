@@ -7,7 +7,9 @@ from loguru import logger
 from exo.shared.types.common import NodeId
 from exo.shared.types.events import (
     ChunkGenerated,
+    DeviceGPUStateUpdated,
     Event,
+    GPUBandwidthMeasured,
     IndexedEvent,
     InputChunkReceived,
     InstanceCreated,
@@ -84,6 +86,10 @@ def event_apply(event: Event, state: State) -> State:
             return apply_topology_edge_created(event, state)
         case TopologyEdgeDeleted():
             return apply_topology_edge_deleted(event, state)
+        case DeviceGPUStateUpdated():
+            return apply_device_gpu_state_updated(event, state)
+        case GPUBandwidthMeasured():
+            return apply_gpu_bandwidth_measured(event, state)
 
 
 def apply(state: State, event: IndexedEvent) -> State:
@@ -362,3 +368,35 @@ def apply_topology_edge_deleted(event: TopologyEdgeDeleted, state: State) -> Sta
     topology.remove_connection(event.conn)
     # TODO: Clean up removing the reverse connection
     return state.model_copy(update={"topology": topology})
+
+
+def apply_device_gpu_state_updated(event: DeviceGPUStateUpdated, state: State) -> State:
+    """Update GPU device state (memory, thermal, utilization).
+    
+    Master receives periodic telemetry from workers and updates cluster state
+    for CSP placement decisions.
+    """
+    from exo.shared.types.state import DeviceGPUState
+    
+    device_state = event.device_state
+    new_gpu_device_state: Mapping[str, DeviceGPUState] = {
+        **state.gpu_device_state,
+        device_state.device_id: device_state,
+    }
+    return state.model_copy(update={"gpu_device_state": new_gpu_device_state})
+
+
+def apply_gpu_bandwidth_measured(event: GPUBandwidthMeasured, state: State) -> State:
+    """Update GPU P2P bandwidth measurement in topology.
+    
+    Master receives bandwidth measurements and updates GPU topology for
+    better placement decisions. Currently a no-op; full integration would
+    update GPUAwareTopology with measured bandwidth.
+    """
+    # TODO: Update gpu_topology with measured bandwidth
+    # For now, just log it and continue
+    logger.debug(
+        f"GPU P2P bandwidth: {event.source_device_id} -> {event.dest_device_id}: "
+        f"{event.bandwidth_mbps:.1f} Mbps (latency: {event.latency_ms:.1f} ms)"
+    )
+    return state

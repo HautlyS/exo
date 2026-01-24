@@ -177,10 +177,64 @@ class StaticNodeInformation(TaggedModel):
     model: str
     chip: str
 
+    # GPU fields (NEW - Phase 1 Task 1.4.2)
+    gpu_backend: str | None = None
+    gpu_devices: list | None = None
+    gpu_discovery_timestamp: str | None = None
+    primary_gpu_device_id: str | None = None
+
     @classmethod
     async def gather(cls) -> Self:
         model, chip = await get_model_and_chip()
-        return cls(model=model, chip=chip)
+        
+        # Discover GPU devices
+        gpu_backend = None
+        gpu_devices = None
+        gpu_discovery_timestamp = None
+        primary_gpu_device_id = None
+        
+        try:
+            from exo.gpu.discovery import GPUDiscoveryService
+            from datetime import datetime
+            import json
+            
+            discovery_service = GPUDiscoveryService()
+            gpu_discovery = await discovery_service.discover_all_devices()
+            
+            if gpu_discovery and gpu_discovery.get("devices"):
+                gpu_backend = gpu_discovery.get("primary_backend", "unknown")
+                gpu_discovery_timestamp = datetime.now().isoformat()
+                
+                # Serialize GPU devices
+                gpu_devices = []
+                for device in gpu_discovery.get("devices", []):
+                    gpu_devices.append({
+                        "device_id": device.device_id,
+                        "name": device.name,
+                        "vendor": device.vendor,
+                        "backend": device.backend,
+                        "compute_capability": device.compute_capability,
+                        "memory_bytes": device.memory_bytes,
+                        "compute_units": device.compute_units,
+                        "bandwidth_gbps": device.bandwidth_gbps,
+                        "support_level": device.support_level,
+                    })
+                
+                # Set primary device
+                if gpu_devices:
+                    primary_gpu_device_id = gpu_devices[0]["device_id"]
+                    
+        except Exception as e:
+            logger.warning(f"GPU discovery failed during node info gathering: {e}")
+        
+        return cls(
+            model=model,
+            chip=chip,
+            gpu_backend=gpu_backend,
+            gpu_devices=gpu_devices,
+            gpu_discovery_timestamp=gpu_discovery_timestamp,
+            primary_gpu_device_id=primary_gpu_device_id,
+        )
 
 
 class NodeNetworkInterfaces(TaggedModel):

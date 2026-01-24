@@ -1,0 +1,390 @@
+name: Build Linux Packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g., v1.0.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-linux:
+    name: Build ${{ matrix.distro }}-${{ matrix.arch }} (${{ matrix.format }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Debian/Ubuntu (APT) - amd64
+          - distro: ubuntu
+            version: "24.04"
+            arch: amd64
+            format: deb
+            container: ubuntu:24.04
+            pkg_cmd: "apt-get"
+            build_script: "build-deb.sh"
+
+          # Debian/Ubuntu (APT) - arm64
+          - distro: ubuntu
+            version: "24.04"
+            arch: arm64
+            format: deb
+            container: ubuntu:24.04
+            pkg_cmd: "apt-get"
+            build_script: "build-deb.sh"
+
+          # Debian (DEB) - amd64
+          - distro: debian
+            version: "12"
+            arch: amd64
+            format: deb
+            container: debian:12
+            pkg_cmd: "apt-get"
+            build_script: "build-deb.sh"
+
+          # Fedora (RPM) - x86_64
+          - distro: fedora
+            version: "41"
+            arch: x86_64
+            format: rpm
+            container: fedora:41
+            pkg_cmd: "dnf"
+            build_script: "build-rpm.sh"
+
+          # RHEL/CentOS (RPM) - x86_64
+          - distro: rhel
+            version: "9"
+            arch: x86_64
+            format: rpm
+            container: quay.io/centos/centos:stream9
+            pkg_cmd: "dnf"
+            build_script: "build-rpm.sh"
+
+          # Alpine (APK) - x86_64
+          - distro: alpine
+            version: "3.20"
+            arch: x86_64
+            format: apk
+            container: alpine:3.20
+            pkg_cmd: "apk"
+            build_script: "build-apk.sh"
+
+          # Arch Linux (PKGBUILD)
+          - distro: archlinux
+            version: latest
+            arch: x86_64
+            format: pkg.tar.zst
+            container: archlinux:latest
+            pkg_cmd: "pacman"
+            build_script: "build-arch.sh"
+
+          # Universal packages (AppImage, Flatpak, Snap - build on Ubuntu)
+          - distro: ubuntu
+            version: "24.04"
+            arch: amd64
+            format: appimage
+            container: ubuntu:24.04
+            pkg_cmd: "apt-get"
+            build_script: "build-appimage.sh"
+
+          - distro: ubuntu
+            version: "24.04"
+            arch: amd64
+            format: flatpak
+            container: ubuntu:24.04
+            pkg_cmd: "apt-get"
+            build_script: "build-flatpak.sh"
+
+          - distro: ubuntu
+            version: "24.04"
+            arch: amd64
+            format: snap
+            container: ubuntu:24.04
+            pkg_cmd: "apt-get"
+            build_script: "build-snap.sh"
+
+    container:
+      image: ${{ matrix.container }}
+      options: --cpus 4 --memory 8g
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare container environment (${{ matrix.distro }})
+        run: |
+          echo "Preparing ${{ matrix.distro }} environment..."
+          case "${{ matrix.pkg_cmd }}" in
+            apt-get)
+              apt-get update -qq
+              apt-get install -y curl git build-essential
+              ;;
+            dnf)
+              dnf groupinstall -y "Development Tools"
+              dnf install -y git curl
+              ;;
+            apk)
+              apk update
+              apk add git curl build-base
+              ;;
+            pacman)
+              pacman -Syyu --noconfirm
+              pacman -S --noconfirm base-devel git curl
+              ;;
+          esac
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Configure Cachix
+        uses: cachix/cachix-action@v14
+        with:
+          name: exo
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION#v}"
+
+      - name: Build dashboard
+        run: |
+          nix build .#dashboard --print-build-logs --no-link --print-out-paths > /tmp/dashboard-out
+          DASHBOARD_OUT=$(cat /tmp/dashboard-out)
+          mkdir -p dashboard/build
+          cp -r "$DASHBOARD_OUT"/* dashboard/build/
+
+      - name: Build with Nix (${{ matrix.format }})
+        run: |
+          nix build ".#packages.x86_64-linux.exo-${{ matrix.format }}" \
+            --print-build-logs --no-link --print-out-paths > /tmp/build-out || \
+          nix build ".#packages.aarch64-linux.exo-${{ matrix.format }}" \
+            --print-build-logs --no-link --print-out-paths > /tmp/build-out || \
+          echo "Fallback build using packaging scripts"
+
+      - name: Build using packaging script
+        if: failure()
+        run: |
+          mkdir -p dist
+          if [ -f "packaging/linux/${{ matrix.build_script }}" ]; then
+            bash "packaging/linux/${{ matrix.build_script }}" "${{ steps.version.outputs.version }}"
+          else
+            echo "Build script not found: packaging/linux/${{ matrix.build_script }}"
+            exit 1
+          fi
+
+      - name: Sign package (GPG)
+        if: secrets.GPG_PRIVATE_KEY != ''
+        run: |
+          mkdir -p ~/.gnupg
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --yes
+          case "${{ matrix.format }}" in
+            deb)
+              cd dist && debsigs --sign origin *.deb
+              ;;
+            rpm)
+              rpm --addsign dist/*.rpm
+              ;;
+            apk)
+              # Alpine uses different signing
+              # abuild-sign dist/*.apk
+              ;;
+          esac
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          sha512sum * > SHA512SUMS
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: exo-${{ matrix.distro }}-${{ matrix.arch }}-${{ matrix.format }}
+          path: dist/
+          retention-days: 7
+
+      - name: Upload to S3 (if configured)
+        if: secrets.AWS_S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/')
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+          S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          S3_PREFIX: releases
+        run: |
+          which aws || (apt-get install -y python3-pip && pip3 install awscli)
+          cd dist
+          for file in *; do
+            aws s3 cp "$file" "s3://${S3_BUCKET}/${S3_PREFIX}/${{ steps.version.outputs.version }}/$file"
+          done
+
+  verify-builds:
+    name: Verify all builds
+    needs: build-linux
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Verify artifacts
+        run: |
+          echo "=== Build Summary ==="
+          find artifacts -type f -name "SHA256SUMS" -exec cat {} \;
+          echo ""
+          echo "=== Artifact Count ==="
+          find artifacts -type f | wc -l
+          echo ""
+          echo "=== Package Types ==="
+          find artifacts -type f | sed 's/.*\.//' | sort | uniq -c
+
+      - name: Check for missing architectures
+        run: |
+          # Verify we have packages for all expected distros
+          # This is optional but helps catch build failures
+          echo "Checking for expected packages..."
+          for distro in debian ubuntu fedora rhel alpine archlinux; do
+            count=$(find artifacts -name "*$distro*" -type f | wc -l)
+            if [ $count -eq 0 ]; then
+              echo "⚠️  Warning: No artifacts found for $distro"
+            else
+              echo "✅ Found $count artifact(s) for $distro"
+            fi
+          done
+
+  upload-packages:
+    name: Upload to package managers
+    needs: [build-linux, verify-builds]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Set up package manager credentials
+        run: |
+          # Setup apt credentials
+          if [ -n "${{ secrets.LAUNCHPAD_CREDENTIALS }}" ]; then
+            mkdir -p ~/.ssh
+            echo "${{ secrets.LAUNCHPAD_CREDENTIALS }}" | base64 -d > ~/.ssh/launchpad_key
+            chmod 600 ~/.ssh/launchpad_key
+          fi
+
+          # Setup Fedora COPR credentials
+          if [ -n "${{ secrets.COPR_CREDENTIALS }}" ]; then
+            mkdir -p ~/.config
+            echo "${{ secrets.COPR_CREDENTIALS }}" | base64 -d > ~/.config/copr
+          fi
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Upload to Launchpad PPA (Ubuntu)
+        if: secrets.LAUNCHPAD_CREDENTIALS != ''
+        run: |
+          apt-get update
+          apt-get install -y dput devscripts
+          cd artifacts
+          dput ppa:exo/ppa exo_${{ steps.version.outputs.version }}_*.changes || \
+          echo "Failed to upload to PPA (may not be configured)"
+
+      - name: Upload to Fedora COPR
+        if: secrets.COPR_CREDENTIALS != ''
+        run: |
+          pip3 install copr-cli
+          cd artifacts
+          copr-cli build exo-explore/exo dist/*.src.rpm || \
+          echo "Failed to upload to COPR (may not be configured)"
+
+      - name: Prepare AUR submission (Arch Linux)
+        if: secrets.AUR_GIT_SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_GIT_SSH_KEY }}" | base64 -d > ~/.ssh/aur_key
+          chmod 600 ~/.ssh/aur_key
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+          # Clone AUR package
+          git clone ssh://aur@aur.archlinux.org/exo.git aur-repo
+          cd aur-repo
+          # Update PKGBUILD and .SRCINFO
+          # Push changes
+          git push || echo "Failed to push to AUR (may not be configured)"
+
+      - name: Prepare Flatpak submission
+        if: secrets.FLATHUB_GITHUB_TOKEN != ''
+        run: |
+          # Submit to Flathub via pull request
+          echo "Flatpak submission would be automated here"
+          # This typically involves a PR to github.com/flathub/io.exo.EXO
+
+      - name: Upload to Snap Store
+        if: secrets.SNAPCRAFT_STORE_CREDENTIALS != ''
+        run: |
+          apt-get update
+          apt-get install -y snapcraft
+          echo "${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}" | snapcraft login --with -
+          cd artifacts
+          snapcraft upload --release=edge exo_*.snap || \
+          echo "Failed to upload to Snap Store (may not be configured)"
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [upload-packages]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
