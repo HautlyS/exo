@@ -97,21 +97,22 @@ jobs:
           fi
           VERSION="${VERSION#v}"
           
-          # Allow X.Y or X.Y.Z format, optionally with prerelease suffix
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+          # Allow X.Y or X.Y.Z format, optionally with prerelease suffix (-anything)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "❌ Invalid version format: $VERSION"
-            echo "   Expected: X.Y.Z or X.Y, optionally with -alpha.N, -beta.N, -rc.N"
+            echo "   Expected: X.Y.Z or X.Y, optionally with -prerelease"
             exit 1
           fi
           
           # Normalize to X.Y.Z format (add .0 if only X.Y)
-          if [[ ! "$VERSION" =~ \.[0-9]+\. ]] && [[ ! "$VERSION" =~ \.[0-9]+-. ]]; then
-            # Has only one dot (X.Y format), add .0
-            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+)(-(.*))$ ]]; then
-              # Has prerelease: 1.1-alpha.1 -> 1.1.0-alpha.1
+          # Check if it has two or more dots (X.Y.Z format)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            # Doesn't have X.Y.Z, so it's X.Y or X.Y-prerelease
+            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+)(-.*)$ ]]; then
+              # X.Y-prerelease -> X.Y.0-prerelease
               VERSION="${BASH_REMATCH[1]}.0${BASH_REMATCH[2]}"
             else
-              # No prerelease: 1.1 -> 1.1.0
+              # X.Y -> X.Y.0
               VERSION="$VERSION.0"
             fi
           fi
