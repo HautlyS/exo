@@ -72,32 +72,228 @@ class VulkanFFI:
     
     @classmethod
     def allocate_memory(cls, device_index: int, size_bytes: int) -> Optional[str]:
-        """Allocate device memory via JNI"""
-        # For Python, we return a stub handle for now
-        # Real implementation would call Java/Kotlin via pyo3
-        import uuid
-        handle_id = str(uuid.uuid4())
-        logger.debug(f"Allocated {size_bytes} bytes on device {device_index}: {handle_id}")
-        return handle_id
+        """Allocate device memory via FFI
+        
+        Args:
+            device_index: Index of device to allocate on
+            size_bytes: Number of bytes to allocate
+            
+        Returns:
+            String handle ID for the allocation, or None on error
+        """
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        # The Rust function returns a JSON string with handle_id
+        lib.allocate_device_memory.restype = ctypes.c_char_p
+        lib.allocate_device_memory.argtypes = [ctypes.c_uint32, ctypes.c_uint64]
+        
+        try:
+            result_json = lib.allocate_device_memory(device_index, size_bytes)
+            if result_json is None:
+                logger.error(f"Failed to allocate {size_bytes} bytes on device {device_index}")
+                return None
+            
+            # Parse JSON result
+            result_str = result_json.decode('utf-8')
+            data = json.loads(result_str)
+            handle_id = data.get('handle_id')
+            
+            if handle_id:
+                logger.debug(f"Allocated {size_bytes} bytes on device {device_index}: {handle_id}")
+            
+            return handle_id
+        except Exception as e:
+            logger.error(f"Error allocating memory: {e}")
+            return None
     
     @classmethod
     def deallocate_memory(cls, handle_id: str) -> bool:
-        """Free device memory"""
-        logger.debug(f"Deallocated memory handle: {handle_id}")
-        return True
+        """Free device memory via FFI
+        
+        Args:
+            handle_id: Handle returned from allocate_memory
+            
+        Returns:
+            True if deallocation succeeded, False otherwise
+        """
+        if not handle_id:
+            logger.warning("Cannot deallocate: handle_id is empty")
+            return False
+        
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        lib.free_device_memory.restype = ctypes.c_bool
+        lib.free_device_memory.argtypes = [ctypes.c_char_p]
+        
+        try:
+            result = lib.free_device_memory(handle_id.encode('utf-8'))
+            if result:
+                logger.debug(f"Deallocated memory handle: {handle_id}")
+            else:
+                logger.warning(f"Failed to deallocate memory handle: {handle_id}")
+            return result
+        except Exception as e:
+            logger.error(f"Error deallocating memory: {e}")
+            return False
     
     @classmethod
     def copy_to_device(cls, handle_id: str, data: bytes) -> bool:
-        """Copy data from host to device"""
-        logger.debug(f"Copied {len(data)} bytes to device {handle_id}")
-        return True
+        """Copy data from host to device via FFI
+        
+        Args:
+            handle_id: Device memory handle from allocate_memory
+            data: Data to copy (bytes)
+            
+        Returns:
+            True if copy succeeded, False otherwise
+        """
+        if not handle_id or not data:
+            logger.warning("Cannot copy: invalid handle or empty data")
+            return False
+        
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        lib.copy_data_to_device.restype = ctypes.c_bool
+        lib.copy_data_to_device.argtypes = [
+            ctypes.c_char_p,           # handle_id
+            ctypes.c_char_p,           # data buffer
+            ctypes.c_uint64            # data length
+        ]
+        
+        try:
+            # Create a ctypes buffer from the data
+            data_buffer = ctypes.create_string_buffer(data)
+            
+            result = lib.copy_data_to_device(
+                handle_id.encode('utf-8'),
+                data_buffer,
+                len(data)
+            )
+            
+            if result:
+                logger.debug(f"Copied {len(data)} bytes to device {handle_id}")
+            else:
+                logger.warning(f"Failed to copy {len(data)} bytes to device {handle_id}")
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error copying data to device: {e}")
+            return False
     
     @classmethod
     def copy_from_device(cls, handle_id: str, size_bytes: int) -> Optional[bytes]:
-        """Copy data from device to host"""
-        logger.debug(f"Copied {size_bytes} bytes from device {handle_id}")
-        # Return zero-filled buffer for now
-        return b'\x00' * size_bytes
+        """Copy data from device to host via FFI
+        
+        Args:
+            handle_id: Device memory handle
+            size_bytes: Number of bytes to copy
+            
+        Returns:
+            Copied data as bytes, or None on error
+        """
+        if not handle_id or size_bytes < 0:
+            logger.warning("Cannot copy from device: invalid handle or negative size")
+            return None
+        
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        lib.copy_data_from_device.restype = ctypes.c_char_p
+        lib.copy_data_from_device.argtypes = [
+            ctypes.c_char_p,           # handle_id
+            ctypes.c_uint64            # size in bytes
+        ]
+        
+        try:
+            result_json = lib.copy_data_from_device(
+                handle_id.encode('utf-8'),
+                size_bytes
+            )
+            
+            if result_json is None:
+                logger.warning(f"Failed to copy {size_bytes} bytes from device {handle_id}")
+                return None
+            
+            # Parse JSON result
+            result_str = result_json.decode('utf-8')
+            data = json.loads(result_str)
+            
+            # Decode base64 data if present
+            encoded_data = data.get('data', '')
+            if encoded_data:
+                import base64
+                decoded = base64.b64decode(encoded_data)
+                logger.debug(f"Copied {len(decoded)} bytes from device {handle_id}")
+                return decoded
+            else:
+                logger.debug(f"Copied 0 bytes from device {handle_id}")
+                return b''
+        except Exception as e:
+            logger.error(f"Error copying data from device: {e}")
+            return None
+    
+    @classmethod
+    def get_device_memory_info(cls, device_index: int) -> tuple[int, int]:
+        """Query device memory information via FFI
+        
+        Args:
+            device_index: Index of device to query
+            
+        Returns:
+            Tuple of (total_memory_bytes, available_memory_bytes)
+        """
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        lib.get_device_memory_info.restype = ctypes.c_char_p
+        lib.get_device_memory_info.argtypes = [ctypes.c_uint32]
+        
+        try:
+            result_json = lib.get_device_memory_info(device_index)
+            if result_json is None:
+                logger.warning(f"Failed to query memory info for device {device_index}")
+                return (0, 0)
+            
+            # Parse JSON result
+            result_str = result_json.decode('utf-8')
+            data = json.loads(result_str)
+            
+            total_bytes = data.get('total_bytes', 0)
+            available_bytes = data.get('available_bytes', total_bytes)
+            
+            logger.debug(f"Device {device_index} memory: {total_bytes} total, {available_bytes} available")
+            
+            return (total_bytes, available_bytes)
+        except Exception as e:
+            logger.error(f"Error querying device memory info: {e}")
+            return (0, 0)
+    
+    @classmethod
+    def synchronize_device(cls, device_index: int) -> bool:
+        """Synchronize with device (wait for pending operations) via FFI
+        
+        Args:
+            device_index: Index of device to synchronize with
+            
+        Returns:
+            True if synchronization succeeded, False otherwise
+        """
+        lib = cls.load_library()
+        
+        # Set up FFI function signature
+        lib.synchronize_device.restype = ctypes.c_bool
+        lib.synchronize_device.argtypes = [ctypes.c_uint32]
+        
+        try:
+            result = lib.synchronize_device(device_index)
+            logger.debug(f"Synchronized with device {device_index}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error synchronizing device: {e}")
+            return False
 
 
 @dataclass
@@ -251,56 +447,64 @@ class VulkanGPUBackend(GPUBackend):
             logger.warning(f"Failed to deallocate Vulkan memory: {handle.handle_id}")
 
     async def copy_to_device(
-        self, device_id: str, host_data: bytes, device_handle: MemoryHandle
+        self, src: bytes, dst_handle: MemoryHandle, offset_bytes: int = 0
     ) -> None:
         """Copy data from host to device.
         
         Args:
-            device_id: Target device ID
-            host_data: Data to copy
-            device_handle: Destination memory handle
+            src: Data to copy (bytes)
+            dst_handle: Destination memory handle
+            offset_bytes: Offset in device memory (default 0)
             
         Raises:
             ValueError: If data exceeds device memory size
             RuntimeError: If copy fails
         """
-        if len(host_data) > device_handle.size_bytes:
+        if len(src) + offset_bytes > dst_handle.size_bytes:
             raise ValueError(
-                f"Data size {len(host_data)} exceeds device memory {device_handle.size_bytes}"
+                f"Data size {len(src)} + offset {offset_bytes} exceeds device memory {dst_handle.size_bytes}"
             )
 
         # Copy via FFI
         success = await asyncio.to_thread(
-            VulkanFFI.copy_to_device, device_handle.handle_id, host_data
+            VulkanFFI.copy_to_device, dst_handle.handle_id, src
         )
         
         if not success:
-            raise RuntimeError(f"Failed to copy {len(host_data)} bytes to device {device_id}")
+            raise RuntimeError(f"Failed to copy {len(src)} bytes to device {dst_handle.device_id}")
         
         logger.debug(
-            f"Copy to device {device_id}: {len(host_data)} bytes to {device_handle.handle_id}"
+            f"Copy to device {dst_handle.device_id}: {len(src)} bytes to {dst_handle.handle_id} at offset {offset_bytes}"
         )
 
-    async def copy_from_device(self, device_id: str, device_handle: MemoryHandle) -> bytes:
+    async def copy_from_device(
+        self, src_handle: MemoryHandle, offset_bytes: int, size_bytes: int
+    ) -> bytes:
         """Copy data from device to host.
         
         Args:
-            device_id: Source device ID
-            device_handle: Source memory handle
+            src_handle: Source memory handle
+            offset_bytes: Offset in device memory
+            size_bytes: Number of bytes to copy
             
         Returns:
             Copied data as bytes
         """
+        if size_bytes + offset_bytes > src_handle.size_bytes:
+            raise ValueError(
+                f"Copy size {size_bytes} + offset {offset_bytes} exceeds device memory {src_handle.size_bytes}"
+            )
+        
         # Copy via FFI
         data = await asyncio.to_thread(
-            VulkanFFI.copy_from_device, device_handle.handle_id, device_handle.size_bytes
+            VulkanFFI.copy_from_device, src_handle.handle_id, size_bytes
         )
         
         if data is None:
-            raise RuntimeError(f"Failed to copy {device_handle.size_bytes} bytes from device {device_id}")
+            raise RuntimeError(f"Failed to copy {size_bytes} bytes from device {src_handle.device_id}")
         
         logger.debug(
-            f"Copy from device {device_id}: {len(data)} bytes from {device_handle.handle_id}"
+            f"Copy from device {src_handle.device_id}: {len(data)} bytes from {src_handle.handle_id} at offset {offset_bytes}"
         )
         
         return data
@@ -321,8 +525,17 @@ class VulkanGPUBackend(GPUBackend):
         if device is None:
             raise RuntimeError(f"Device {device_id} not found")
 
-        # TODO: Query actual device memory via FFI
-        return (device.memory_bytes, device.memory_available)
+        # Query actual device memory via FFI
+        device_index = int(device_id.split(":")[-1])
+        total_bytes, available_bytes = await asyncio.to_thread(
+            VulkanFFI.get_device_memory_info, device_index
+        )
+        
+        if total_bytes == 0:
+            # Fallback to cached values if FFI fails
+            return (device.memory_bytes, device.memory_available)
+        
+        return (total_bytes, available_bytes)
 
     async def synchronize(self, device_id: str) -> None:
         """Synchronize with device (wait for outstanding operations).
@@ -330,8 +543,14 @@ class VulkanGPUBackend(GPUBackend):
         Args:
             device_id: Device to synchronize with
         """
-        # TODO: Call actual Vulkan synchronization via FFI
-        logger.debug(f"Synchronize with device {device_id}")
+        device = self.get_device(device_id)
+        if device is None:
+            raise RuntimeError(f"Device {device_id} not found")
+        
+        # Call actual Vulkan synchronization via FFI
+        device_index = int(device_id.split(":")[-1])
+        await asyncio.to_thread(VulkanFFI.synchronize_device, device_index)
+        logger.debug(f"Synchronized with device {device_id}")
 
     async def get_device_properties(self, device_id: str) -> dict:
         """Get detailed device properties.
@@ -357,6 +576,83 @@ class VulkanGPUBackend(GPUBackend):
             "bandwidth_gbps": device.bandwidth_gbps,
             "driver_version": device.driver_version,
         }
+
+    # ========== Stub methods for testing ==========
+
+    async def copy_device_to_device(
+        self, src_handle: MemoryHandle, dst_handle: MemoryHandle, size_bytes: int
+    ) -> None:
+        """Copy between devices for multi-GPU setups.
+        
+        Note: Vulkan doesn't support P2P transfers in the current implementation.
+        
+        Args:
+            src_handle: Source device memory
+            dst_handle: Destination device memory
+            size_bytes: Number of bytes to copy
+            
+        Raises:
+            NotImplementedError: Vulkan P2P transfers not yet implemented
+        """
+        # Vulkan P2P would require additional setup
+        raise NotImplementedError("Vulkan peer-to-peer transfers not yet implemented")
+
+    async def get_device_temperature(self, device_id: str) -> Optional[float]:
+        """Get current device temperature in Celsius.
+        
+        Vulkan doesn't expose device temperature information.
+        
+        Args:
+            device_id: Device identifier
+            
+        Returns:
+            None (temperature not available for Vulkan)
+        """
+        device = self.get_device(device_id)
+        if device is None:
+            raise RuntimeError(f"Device {device_id} not found")
+        
+        # Vulkan doesn't expose temperature
+        logger.debug(f"Temperature not available for Vulkan device {device_id}")
+        return None
+
+    async def get_device_power_usage(self, device_id: str) -> Optional[float]:
+        """Get current device power usage in Watts.
+        
+        Vulkan doesn't expose device power usage information.
+        
+        Args:
+            device_id: Device identifier
+            
+        Returns:
+            None (power usage not available for Vulkan)
+        """
+        device = self.get_device(device_id)
+        if device is None:
+            raise RuntimeError(f"Device {device_id} not found")
+        
+        # Vulkan doesn't expose power usage
+        logger.debug(f"Power usage not available for Vulkan device {device_id}")
+        return None
+
+    async def get_device_clock_rate(self, device_id: str) -> Optional[int]:
+        """Get current device clock rate in MHz.
+        
+        Vulkan doesn't expose device clock rate information.
+        
+        Args:
+            device_id: Device identifier
+            
+        Returns:
+            None (clock rate not available for Vulkan)
+        """
+        device = self.get_device(device_id)
+        if device is None:
+            raise RuntimeError(f"Device {device_id} not found")
+        
+        # Vulkan doesn't expose clock rate dynamically
+        logger.debug(f"Clock rate not available for Vulkan device {device_id}")
+        return None
 
     # ========== Stub methods for testing ==========
 
