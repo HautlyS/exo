@@ -127,8 +127,7 @@ class CPUBackend(GPUBackend):
         await self.copy_to_device(src_data, dst_handle)
 
     async def synchronize(self, device_id: str) -> None:
-        """Synchronize CPU device (no-op)."""
-        pass
+        """Synchronize CPU device (no-op - CPU doesn't have async operations to sync)."""
 
     async def get_device_memory_info(self, device_id: str) -> dict:
         """Get memory info for CPU."""
