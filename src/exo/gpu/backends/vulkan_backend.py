@@ -357,7 +357,7 @@ class VulkanFFI:
             return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class VulkanDevice(GPUDevice):
     """Vulkan-specific GPU device information."""
     backend_name: str = "vulkan"
