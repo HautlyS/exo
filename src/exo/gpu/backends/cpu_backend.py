@@ -7,7 +7,7 @@ This backend uses host memory and simulates GPU operations. Used when:
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Dict
 
 from exo.gpu.backend import GPUBackend, GPUDevice, MemoryHandle
 
@@ -19,8 +19,8 @@ class CPUBackend(GPUBackend):
 
     def __init__(self):
         self._initialized = False
-        self._devices = []
-        self._allocated_memory = {}
+        self._devices: list[GPUDevice] = []
+        self._allocated_memory: Dict[str, bytearray] = {}
 
     async def initialize(self) -> None:
         """Initialize CPU backend (always succeeds)."""
@@ -129,23 +129,22 @@ class CPUBackend(GPUBackend):
     async def synchronize(self, device_id: str) -> None:
         """Synchronize CPU device (no-op - CPU doesn't have async operations to sync)."""
 
-    async def get_device_memory_info(self, device_id: str) -> dict:
+    async def get_device_memory_info(self, device_id: str) -> dict[str, int]:
         """Get memory info for CPU."""
-        import os
 
         try:
             # Try to get total system memory
             with open("/proc/meminfo", "r") as f:
                 meminfo = f.read()
-                mem_total = None
-                mem_available = None
+                mem_total: int | None = None
+                mem_available: int | None = None
                 for line in meminfo.split("\n"):
                     if line.startswith("MemTotal:"):
                         mem_total = int(line.split()[1]) * 1024
                     elif line.startswith("MemAvailable:"):
                         mem_available = int(line.split()[1]) * 1024
 
-                if mem_total and mem_available:
+                if mem_total is not None and mem_available is not None:
                     used = mem_total - mem_available
                     return {
                         "total_bytes": mem_total,

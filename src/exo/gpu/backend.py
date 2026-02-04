@@ -239,7 +239,7 @@ class GPUBackend(ABC):
     # ===== Monitoring (Optional) =====
 
     @abstractmethod
-    async def get_device_memory_info(self, device_id: str) -> dict:
+    async def get_device_memory_info(self, device_id: str) -> dict[str, int]:
         """Get current device memory usage info.
 
         Args:

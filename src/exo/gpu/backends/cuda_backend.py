@@ -32,9 +32,9 @@ class CUDABackend(GPUBackend):
                 "CuPy not installed. Install with: pip install cupy-cuda11x or cupy-cuda12x"
             )
         self._initialized = False
-        self._devices = []
+        self._devices: list[GPUDevice] = []
         self._device_count = 0
-        self._memory_handles: dict[str, tuple] = {}
+        self._memory_handles: dict[str, tuple[int, int]] = {}
 
     async def initialize(self) -> None:
         """Initialize CUDA backend via CuPy."""
