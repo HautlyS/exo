@@ -5,12 +5,20 @@ Provides:
 - Device scoring and selection
 - Multi-device workload distribution
 - Telemetry aggregation
+
+Production-hardened with:
+- Memory-efficient deque for history tracking
+- Comprehensive input validation
+- Async-safe shutdown with graceful timeout
+- Complete error handling and resource cleanup
 """
 
 import asyncio
 import logging
-from typing import Optional, Dict, List
+from collections import deque
+from typing import Optional, Dict, List, Any, Union
 from datetime import datetime, timezone
+from enum import Enum
 
 from exo.gpu.backend import GPUDevice, MemoryHandle, GPUBackend
 from exo.gpu.telemetry_protocol import (
@@ -20,34 +28,84 @@ from exo.gpu.telemetry_protocol import (
 logger = logging.getLogger(__name__)
 
 
-class GPUClusteringManager:
-    """Manage multi-GPU clustering and workload distribution."""
+class DistributionStrategy(Enum):
+    """Type-safe distribution strategies (fixes Issue #7)."""
+    UNIFORM = "uniform"
+    CAPACITY = "capacity"
 
-    def __init__(self):
-        """Initialize clustering manager."""
+
+class GPUClusteringManager:
+    """Manage multi-GPU clustering and workload distribution.
+    
+    Production-hardened with:
+    - Initialization error handling (Issue #2)
+    - Shutdown race condition guards (Issue #5)
+    - Input validation (Issue #3)
+    - Comprehensive cleanup (Issue #6)
+    """
+
+    def __init__(self) -> None:
+        """Initialize clustering manager with error handling.
+        
+        Raises:
+            RuntimeError: If initialization fails
+        """
         self._devices: Dict[str, GPUDevice] = {}
-        self._telemetry = None
-        self._workload_distributor = None
+        self._telemetry: Optional[TelemetryCollector] = None
+        self._workload_distributor: Optional[WorkloadDistributor] = None
         self._backend: Optional[GPUBackend] = None
         self._telemetry_task: Optional[asyncio.Task] = None
         self._initialized = False
+        self._shutdown_event = asyncio.Event()
+        self._metrics_lock = asyncio.Lock()
         
-        # Lazy initialize components
+        # Initialize components with error handling
         self._init_components()
 
     def _init_components(self) -> None:
-        """Initialize clustering components."""
-        if self._telemetry is None:
-            self._telemetry = TelemetryCollector()
-        if self._workload_distributor is None:
-            self._workload_distributor = WorkloadDistributor()
+        """Initialize clustering components with error handling.
+        
+        Raises:
+            RuntimeError: If initialization fails
+        """
+        try:
+            if self._telemetry is None:
+                self._telemetry = TelemetryCollector()
+            if self._workload_distributor is None:
+                self._workload_distributor = WorkloadDistributor()
+            self._initialized = True
+            logger.info("GPU clustering components initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize clustering components: {e}")
+            self._initialized = False
+            raise RuntimeError(
+                f"Clustering component initialization failed: {e}"
+            ) from e
+
+    def _check_initialized(self) -> None:
+        """Verify manager is initialized before operations.
+        
+        Raises:
+            RuntimeError: If not initialized or shutting down
+        """
+        if not self._initialized:
+            raise RuntimeError("GPUClusteringManager not properly initialized")
+        
+        if self._shutdown_event.is_set():
+            raise RuntimeError("GPUClusteringManager is shutting down")
 
     def register_device(self, device: GPUDevice) -> None:
         """Register a GPU device with the cluster.
 
         Args:
             device: GPU device to register
+            
+        Raises:
+            ValueError: If device is invalid
         """
+        if not device.device_id:
+            raise ValueError("Device must have valid device_id")
+        
         self._devices[device.device_id] = device
         logger.info(f"Registered device: {device.device_id} ({device.name})")
 
@@ -71,12 +129,57 @@ class GPUClusteringManager:
         return list(self._devices.values())
 
     async def record_metrics(self, metrics: GPUMetrics) -> None:
-        """Record metrics for a device.
+        """Record metrics for a device with validation.
 
         Args:
             metrics: GPU metrics to record
+            
+        Raises:
+            RuntimeError: If not initialized or shutting down
+            KeyError: If device not registered
+            ValueError: If metrics are invalid
         """
-        await self._telemetry.record_metrics(metrics)
+        self._check_initialized()
+        
+        # Check for shutdown early
+        if self._shutdown_event.is_set():
+            raise RuntimeError("Cannot record metrics: manager shutting down")
+        
+        # Validate device is registered
+        if metrics.device_id not in self._devices:
+            raise KeyError(f"Device {metrics.device_id} not registered")
+        
+        # Validate metric ranges
+        if not 0 <= metrics.compute_utilization_percent <= 100:
+            raise ValueError(
+                f"Utilization out of range [0, 100]: "
+                f"{metrics.compute_utilization_percent}%"
+            )
+        
+        if metrics.memory_used_bytes < 0:
+            raise ValueError(
+                f"Memory used cannot be negative: {metrics.memory_used_bytes}"
+            )
+        
+        if metrics.memory_total_bytes <= 0:
+            raise ValueError(
+                f"Total memory must be positive: {metrics.memory_total_bytes}"
+            )
+        
+        if metrics.memory_used_bytes > metrics.memory_total_bytes:
+            raise ValueError(
+                f"Used memory ({metrics.memory_used_bytes}) exceeds total "
+                f"({metrics.memory_total_bytes})"
+            )
+        
+        if metrics.temperature_celsius < -273.15:  # Absolute zero
+            raise ValueError(
+                f"Temperature below absolute zero: {metrics.temperature_celsius}°C"
+            )
+        
+        # Record with lock to prevent race conditions (Issue #5)
+        async with self._metrics_lock:
+            await self._telemetry.record_metrics(metrics)
 
     def get_aggregated_metrics(self) -> Dict:
         """Get aggregated metrics across all devices.
@@ -96,7 +199,13 @@ class GPUClusteringManager:
 
         Returns:
             Best device_id or None if no suitable device
+            
+        Raises:
+            ValueError: If min_memory_bytes is negative
         """
+        if min_memory_bytes < 0:
+            raise ValueError("min_memory_bytes cannot be negative")
+        
         devices_dict = {}
         for device_id in self._devices.keys():
             metrics = self._telemetry.get_metrics(device_id)
@@ -123,28 +232,44 @@ class GPUClusteringManager:
 
     def distribute_workload(
         self,
-        tasks: List,
-        strategy: str = "uniform",
+        tasks: List[Any],
+        strategy: Union[DistributionStrategy, str] = DistributionStrategy.UNIFORM,
         capacities: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, List]:
+    ) -> Dict[str, List[Any]]:
         """Distribute workload across devices.
 
         Args:
             tasks: List of tasks to distribute
-            strategy: Distribution strategy ('uniform' or 'capacity')
+            strategy: Distribution strategy (Enum or string for compatibility)
             capacities: Optional capacity weights for 'capacity' strategy
 
         Returns:
             Dict of device_id -> assigned tasks
+            
+        Raises:
+            ValueError: If strategy is invalid
         """
+        if not tasks:
+            return {d: [] for d in self._devices.keys()}
+        
         device_ids = list(self._devices.keys())
+        
+        # Handle both enum and string for backwards compatibility (Issue #7)
+        if isinstance(strategy, str):
+            try:
+                strategy = DistributionStrategy(strategy)
+            except ValueError:
+                raise ValueError(
+                    f"Unknown distribution strategy: {strategy}. "
+                    f"Valid: {[s.value for s in DistributionStrategy]}"
+                )
 
-        if strategy == "uniform":
+        if strategy == DistributionStrategy.UNIFORM:
             return self._workload_distributor.distribute_uniform(
                 devices=device_ids,
                 workload_items=tasks,
             )
-        elif strategy == "capacity":
+        elif strategy == DistributionStrategy.CAPACITY:
             if not capacities:
                 # Use compute units as capacity
                 capacities = {
@@ -159,20 +284,58 @@ class GPUClusteringManager:
             raise ValueError(f"Unknown distribution strategy: {strategy}")
 
     async def shutdown(self) -> None:
-        """Shutdown clustering manager and cleanup resources."""
-        if self._telemetry_task and not self._telemetry_task.done():
-            self._telemetry_task.cancel()
-            try:
-                await self._telemetry_task
-            except asyncio.CancelledError:
-                pass
+        """Shutdown clustering manager and cleanup all resources.
+        
+        Async-safe with graceful timeout for in-flight operations.
+        Addresses Issues #5 and #6 (race conditions and cleanup).
+        """
+        try:
+            # Signal shutdown to prevent new operations (Issue #5)
+            self._shutdown_event.set()
+            logger.info("GPU clustering manager shutting down...")
+            
+            # Give in-flight operations time to complete (grace period)
+            await asyncio.sleep(0.1)
+            
+            # Cancel any running telemetry tasks
+            if self._telemetry_task and not self._telemetry_task.done():
+                self._telemetry_task.cancel()
+                try:
+                    await self._telemetry_task
+                except asyncio.CancelledError:
+                    logger.debug("Telemetry task cancelled")
 
-        if self._backend:
-            await self._backend.shutdown()
-            self._backend = None
+            # Shutdown backend
+            if self._backend:
+                try:
+                    await self._backend.shutdown()
+                except Exception as e:
+                    logger.error(f"Error shutting down backend: {e}")
+                finally:
+                    self._backend = None
 
-        self._devices.clear()
-        logger.info("GPU clustering manager shutdown")
+            # Clear telemetry data (Issue #6)
+            if self._telemetry:
+                try:
+                    self._telemetry._current_metrics.clear()
+                    self._telemetry._metrics_history.clear()
+                except Exception as e:
+                    logger.error(f"Error clearing telemetry: {e}")
+                finally:
+                    self._telemetry = None
+
+            # Clear workload distributor
+            self._workload_distributor = None
+
+            # Clear devices
+            self._devices.clear()
+            
+            self._initialized = False
+            logger.info("GPU clustering manager shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during clustering manager shutdown: {e}")
+            raise
 
 
 class DeviceSelector:
@@ -199,7 +362,13 @@ class DeviceSelector:
 
         Returns:
             Best device_id or None if no suitable device
+            
+        Raises:
+            ValueError: If min_memory_bytes is negative
         """
+        if min_memory_bytes < 0:
+            raise ValueError("min_memory_bytes cannot be negative")
+        
         ranked = self.rank_devices()
 
         for device_id, score in ranked:
@@ -226,17 +395,27 @@ class DeviceSelector:
 
 
 class TelemetryCollector:
-    """Collect and aggregate telemetry from GPU devices."""
+    """Collect and aggregate telemetry from GPU devices.
+    
+    Production-hardened with deque for memory-efficient history tracking (Issue #1).
+    """
 
-    def __init__(self, max_history: int = 100):
+    def __init__(self, max_history: int = 100) -> None:
         """Initialize telemetry collector.
 
         Args:
             max_history: Maximum history entries per device
+            
+        Raises:
+            ValueError: If max_history is invalid
         """
+        if max_history <= 0:
+            raise ValueError("max_history must be positive")
+        
         self._max_history = max_history
         self._current_metrics: Dict[str, GPUMetrics] = {}
-        self._metrics_history: Dict[str, List[GPUMetrics]] = {}
+        # Use deque with maxlen for O(1) automatic eviction (Issue #1)
+        self._metrics_history: Dict[str, deque] = {}
 
     async def record_metrics(self, metrics: GPUMetrics) -> None:
         """Record metrics from a device.
@@ -249,18 +428,12 @@ class TelemetryCollector:
         # Update current
         self._current_metrics[device_id] = metrics
 
-        # Add to history
+        # Add to history with automatic eviction (Issue #1)
         if device_id not in self._metrics_history:
-            self._metrics_history[device_id] = []
+            # deque with maxlen automatically evicts oldest when full (O(1))
+            self._metrics_history[device_id] = deque(maxlen=self._max_history)
 
         self._metrics_history[device_id].append(metrics)
-
-        # Keep history size limited
-        if len(self._metrics_history[device_id]) > self._max_history:
-            self._metrics_history[device_id] = self._metrics_history[device_id][
-                -self._max_history :
-            ]
-
         logger.debug(f"Recorded metrics for {device_id}")
 
     def get_metrics(self, device_id: str) -> Optional[GPUMetrics]:
@@ -283,7 +456,8 @@ class TelemetryCollector:
         Returns:
             List of GPUMetrics (empty if no history)
         """
-        return self._metrics_history.get(device_id, [])
+        history = self._metrics_history.get(device_id)
+        return list(history) if history else []
 
     def get_aggregated_metrics(self) -> Dict:
         """Get aggregated metrics across all devices.
@@ -323,9 +497,9 @@ class WorkloadDistributor:
     def distribute_uniform(
         self,
         devices: List[str],
-        workload_items: List,
+        workload_items: List[Any],
         max_per_device: Optional[int] = None,
-    ) -> Dict[str, List]:
+    ) -> Dict[str, List[Any]]:
         """Distribute workload uniformly across devices.
 
         Args:
@@ -335,10 +509,19 @@ class WorkloadDistributor:
 
         Returns:
             Dict of device_id -> list of assigned items
+            
+        Raises:
+            ValueError: If inputs are invalid
         """
+        if not devices:
+            return {}
+        
+        if max_per_device is not None and max_per_device <= 0:
+            raise ValueError("max_per_device must be positive")
+        
         distribution = {d: [] for d in devices}
 
-        if not devices or not workload_items:
+        if not workload_items:
             return distribution
 
         items_per_device = len(workload_items) // len(devices)
@@ -360,9 +543,9 @@ class WorkloadDistributor:
     def distribute_by_capacity(
         self,
         capacities: Dict[str, float],
-        workload_items: List,
-    ) -> Dict[str, List]:
-        """Distribute workload based on device capacity.
+        workload_items: List[Any],
+    ) -> Dict[str, List[Any]]:
+        """Distribute workload based on device capacity with validation.
 
         Args:
             capacities: Dict of device_id -> capacity_weight (relative)
@@ -370,13 +553,27 @@ class WorkloadDistributor:
 
         Returns:
             Dict of device_id -> list of assigned items
+            
+        Raises:
+            ValueError: If capacities are invalid (Issue #4)
         """
         distribution = {d: [] for d in capacities.keys()}
 
         if not capacities or not workload_items:
             return distribution
 
+        # Validate all capacities are non-negative (Issue #4)
+        if any(cap < 0 for cap in capacities.values()):
+            raise ValueError("All capacity values must be non-negative")
+        
         total_capacity = sum(capacities.values())
+        
+        # Validate total capacity to prevent division by zero (Issue #4)
+        if total_capacity <= 0:
+            raise ValueError(
+                f"Total capacity must be positive, got {total_capacity}"
+            )
+
         item_idx = 0
 
         for device_id in sorted(capacities.keys()):
