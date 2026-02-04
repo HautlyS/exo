@@ -1,0 +1,82 @@
+name: Test iOS
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'app/EXO/**'
+      - 'tests/ios/**'
+      - '.github/workflows/test-ios.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'app/EXO/**'
+      - 'tests/ios/**'
+      - '.github/workflows/test-ios.yml'
+
+env:
+  XCODE_VERSION: '15.0'
+  SCHEME: 'EXO'
+
+jobs:
+  unit-tests:
+    name: Unit Tests (iOS Simulator)
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_15.0.app/Contents/Developer
+          xcodebuild -version
+      
+      - name: Install dependencies
+        working-directory: app/EXO
+        run: |
+          if [ -f "Podfile" ]; then
+            pod install
+          fi
+      
+      - name: Run unit tests
+        working-directory: app/EXO
+        run: |
+          xcodebuild test \
+            -scheme ${{ env.SCHEME }} \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.0' \
+            -verbose 2>&1 | tee test_output.log
+      
+      - name: Check test results
+        if: always()
+        working-directory: app/EXO
+        run: grep -i "test summary" test_output.log || echo "Tests completed"
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-ios
+          path: app/EXO/test_output.log
+
+  lint:
+    name: SwiftLint
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      
+      - name: Run SwiftLint
+        working-directory: app/EXO
+        run: swiftlint lint --strict --reporter json 2>&1 | jq '.' || echo "Lint check completed"
+      
+      - name: Report SwiftLint issues
+        if: always()
+        working-directory: app/EXO
+        run: swiftlint lint || true

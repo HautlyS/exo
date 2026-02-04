@@ -1,0 +1,71 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'app/EXO/**'
+      - '.github/workflows/build-ios.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'app/EXO/**'
+      - '.github/workflows/build-ios.yml'
+
+env:
+  XCODE_VERSION: '15.0'
+  SCHEME: 'EXO'
+  CONFIG: 'Release'
+
+jobs:
+  build:
+    name: Build iOS App
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_15.0.app/Contents/Developer
+          xcodebuild -version
+      
+      - name: Cache CocoaPods
+        uses: actions/cache@v3
+        with:
+          path: Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('**/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+      
+      - name: Install dependencies
+        working-directory: app/EXO
+        run: |
+          if [ -f "Podfile" ]; then
+            pod install
+          fi
+      
+      - name: Build for iOS Simulator
+        working-directory: app/EXO
+        run: |
+          xcodebuild \
+            -scheme ${{ env.SCHEME }} \
+            -configuration ${{ env.CONFIG }} \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            build 2>&1 | tee build_output.log
+      
+      - name: Check for build errors
+        if: failure()
+        working-directory: app/EXO
+        run: grep -i "error:" build_output.log || echo "No errors found"
+      
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-logs-ios
+          path: app/EXO/build_output.log
