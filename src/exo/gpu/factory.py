@@ -165,15 +165,15 @@ class GPUBackendFactory:
 
         elif backend_name == "vulkan":
             try:
-                from exo.gpu.backends.vulkan_backend import VulkanBackend
+                from exo.gpu.backends.vulkan_backend import VulkanGPUBackend
 
-                backend = VulkanBackend()
+                backend = VulkanGPUBackend()
                 await backend.initialize()
                 return backend
             except ImportError as e:
                 raise RuntimeError(
                     f"Vulkan backend not available: {e}. "
-                    "Install vulkan support"
+                    "Vulkan support not compiled"
                 ) from e
 
         elif backend_name == "tensorflow_lite_gpu":
