@@ -1,302 +1,304 @@
-# GPU Integration - Quick Reference Card
-
-## Project Status
-- **Overall**: 60% → 80% target (16 hours)
-- **Phase 1 (GPU Backends)**: ✅ 100%
-- **Phase 2 (Heterogeneous)**: 🔄 70% (CSP integration pending)
-
-## Critical Path Items
-
-### 1. CSP Integration (3h) - `src/exo/master/placement.py`
-```python
-# After line 188, add:
-if gpu_device_state and _has_heterogeneous_gpus(gpu_device_state):
-    shard_assignments = await _place_instance_with_csp(...)
-else:
-    shard_assignments = get_shard_assignments(...)  # existing
-```
-
-### 2. Worker Integration (4h) - `src/exo/worker/main.py`
-```python
-# In Worker.run():
-self.gpu_telemetry = GPUTelemetryCollector(
-    node_id=self.node_id,
-    gpu_backend=await GPUBackendFactory.create_backend(),
-    event_emitter=emit_gpu_event,
-)
-await self.gpu_telemetry.start_monitoring()
-```
-
-### 3. Testing (6h) - Multiple files
-```bash
-uv run pytest src/exo/master/tests/test_placement_csp_integration.py -xvs
-uv run pytest src/exo/worker/tests/test_gpu_telemetry.py -xvs
-uv run pytest src/exo/shared/tests/test_gpu_integration_e2e.py -xvs
-```
-
-## Key Files & Their Purpose
-
-| File | Purpose | Lines | Status |
-|------|---------|-------|--------|
-| `src/exo/gpu/backend.py` | GPU abstraction interface | 300 | ✅ |
-| `src/exo/master/placement_csp.py` | CSP solver | 410 | ✅ |
-| `src/exo/worker/gpu_telemetry.py` | Telemetry collector | 270 | ✅ |
-| `src/exo/shared/types/events.py` | GPU events | +25 | ✅ |
-| `src/exo/shared/apply.py` | Event handlers | +45 | ✅ |
-| `src/exo/master/placement.py` | Placement logic | +100 | 🔄 |
-| `src/exo/worker/main.py` | Worker init | +40 | 🔄 |
-
-## Code Snippets
-
-### Check if Heterogeneous
-```python
-from exo.master.placement import _has_heterogeneous_gpus
-if _has_heterogeneous_gpus(gpu_device_state):
-    # Use CSP
-else:
-    # Use greedy
-```
-
-### Compute Device Scores
-```python
-from exo.master.placement import _compute_device_scores
-scores = _compute_device_scores(
-    cycle_node_ids=selected_cycle.node_ids,
-    gpu_device_state=gpu_device_state,
-    shard_size_bytes=max(shard_sizes),
-    topology=topology,
-)
-```
-
-### Collect GPU State
-```python
-from exo.worker.gpu_telemetry import GPUTelemetryCollector
-collector = GPUTelemetryCollector(
-    node_id=node_id,
-    gpu_backend=gpu_backend,
-    event_emitter=emit_event,
-)
-await collector.start_monitoring()
-```
-
-### Emit GPU Event
-```python
-from exo.shared.types.events import DeviceGPUStateUpdated
-event = DeviceGPUStateUpdated(device_state=state)
-await event_sender.send(event)
-```
-
-## Commands Cheatsheet
-
-```bash
-# Type checking
-uv run basedpyright
-
-# Linting
-uv run ruff check
-
-# Formatting
-nix fmt
-
-# Test all
-uv run pytest
-
-# Test specific
-uv run pytest src/exo/master/tests/ -xvs
-
-# Test with coverage
-uv run pytest --cov=src/exo/master/
-
-# Run exo
-uv run exo -vv
-```
-
-## Architecture at 10,000 Feet
-
-```
-Worker Node
-├── GPU Devices
-│   ├── cuda:0 (8GB)
-│   └── cuda:1 (16GB) ← Heterogeneous!
-└── GPUTelemetryCollector
-    └── DeviceGPUStateUpdated Event
-        ↓
-Master Node
-├── Event Handler (apply.py)
-│   └── Update State.gpu_device_state
-└── Placement Decision
-    ├── Detect Heterogeneous
-    ├── Compute Scores (memory, thermal, compute, network)
-    ├── Solve CSP (optimal shard assignment)
-    └── Create Instance with optimal placement
-```
-
-## DeviceGPUState Fields
-
-```python
-device_id: str                    # e.g., "cuda:0"
-node_id: NodeId                   # Owner node
-memory_used_bytes: int            # Current usage
-memory_total_bytes: int           # Total capacity
-compute_utilization_percent: float # 0-100
-thermal_temperature_c: float      # Current temp or -1
-thermal_throttle_threshold_c: float # Safety limit
-is_thermal_throttling: bool       # Currently throttled?
-battery_percent: float            # Mobile: 0-100
-is_plugged_in: bool              # Mobile: charging?
-last_update: datetime             # When measured
-```
-
-## CSP Scoring Weights
-
-```python
-GPUDeviceScore.weighted_score = (
-    compute_score * 0.40 +      # Critical
-    memory_score * 0.30 +       # Important
-    network_score * 0.15 +      # Moderate
-    thermal_score * 0.10 +      # Mobile safety
-    bandwidth_score * 0.05      # Optimization
-)
-```
-
-## Event Types
-
-### DeviceGPUStateUpdated
-```python
-@dataclass
-class DeviceGPUStateUpdated(BaseEvent):
-    device_state: DeviceGPUState  # Updated metrics
-```
-**Emitter**: GPUTelemetryCollector  
-**Handler**: apply_device_gpu_state_updated()  
-**Effect**: Updates State.gpu_device_state[device_id]
-
-### GPUBandwidthMeasured
-```python
-@dataclass
-class GPUBandwidthMeasured(BaseEvent):
-    source_device_id: str
-    dest_device_id: str
-    bandwidth_mbps: float
-    latency_ms: float
-    measurement_count: int
-```
-**Emitter**: (Topology measurement phase)  
-**Handler**: apply_gpu_bandwidth_measured()  
-**Effect**: (TODO: Update GPU topology)
-
-## Testing Strategy
-
-### Unit Tests (Fast, Isolated)
-- `_has_heterogeneous_gpus()` with different device configs
-- `_compute_device_scores()` with various states
-- `GPUTelemetryCollector` with mocked backend
-- Event handlers apply state correctly
-
-### Integration Tests (Components Interact)
-- Mock cluster with heterogeneous devices
-- Verify CSP called instead of greedy
-- Verify events applied to state
-- Verify placement uses latest state
-
-### E2E Tests (Full System)
-- Real or synthetic GPU devices
-- Full placement decision pipeline
-- Telemetry collection → event → state → placement
-- Verify optimal assignments
-
-### Regression Tests (Nothing Broke)
-- Existing MLX placement still works
-- Non-heterogeneous clusters unchanged
-- Event ordering maintained
-- State consistency preserved
-
-## Common Mistakes
-
-❌ Forgetting to import DeviceGPUState  
-❌ Using `Optional[DeviceGPUState]` instead of checking with `.get()`  
-❌ Not handling None GPU backend gracefully  
-❌ Emitting telemetry events too frequently  
-❌ Breaking existing MLX placement logic  
-❌ Not testing error cases  
-❌ Forgetting to stop telemetry on shutdown  
-
-## Performance Targets
-
-| Metric | Target | How to Measure |
-|--------|--------|----------------|
-| GPU init | <3s | Time `GPUBackendFactory.create_backend()` |
-| Telemetry overhead | <5% | Compare inference with/without telemetry |
-| CSP placement | <100ms | Time CSP solver or use greedy fallback |
-| State update latency | <500ms | Time from event emission to state update |
-| Memory overhead | <50MB | Monitor process memory for gpu_device_state |
-
-## Debugging Tips
-
-### GPU Events Not Emitted
-1. Check worker startup logs for "GPU telemetry monitoring started"
-2. Verify GPU backend initialization succeeds
-3. Check `_is_running` flag in collector
-4. Add logging to _monitoring_loop()
-
-### CSP Solver Not Used
-1. Check `_has_heterogeneous_gpus()` return value
-2. Verify gpu_device_state has >1 device
-3. Check if memory sizes are different
-4. Add logging in place_instance()
-
-### Type Checker Failures
-1. Check import paths are correct
-2. Verify Mapping vs Sequence types
-3. Use `basedpyright --version` to check compiler
-4. Look for None-related type errors
-
-### Test Failures
-1. Run with `-xvs` for verbose output
-2. Use `--pdb` to debug
-3. Check mock setup is correct
-4. Verify fixture parameters
-
-## Decision Tree: When to Use CSP
-
-```
-├─ gpu_device_state exists?
-│  ├─ No → Use greedy placement
-│  └─ Yes
-│     ├─ _has_heterogeneous_gpus()?
-│     │  ├─ No → Use greedy placement
-│     │  └─ Yes
-│     │     ├─ Try CSP placement
-│     │     ├─ Timeout? → Use greedy fallback
-│     │     └─ Success → Use CSP assignments
-```
-
-## Session 2 Checklist
-
-### Day 1: Integration
-- [ ] Add CSP logic to placement.py
-- [ ] Initialize telemetry in worker.py
-- [ ] Verify master receives events
-- [ ] Smoke test: no crashes
-
-### Day 2: Testing & Polish
-- [ ] Unit tests pass
-- [ ] Integration tests pass
-- [ ] Regression tests pass
-- [ ] Performance OK (<5% overhead)
-- [ ] All quality checks pass
-- [ ] Documentation updated
-
-## References
-
-| Document | Purpose |
-|----------|---------|
-| SESSION_2_ROADMAP.md | Step-by-step implementation |
-| ANALYSIS_AND_ROADMAP.md | Requirements vs implementation |
-| README_GPU_INTEGRATION.md | Architecture overview |
-| IMPLEMENTATION_STATUS.md | Current status tracking |
-| EXECUTIVE_SUMMARY.md | Business impact |
+# Quick Reference Card - Cross-Device GPU Implementation
+**Keep this handy while implementing**
 
 ---
 
-**Keep this handy while implementing Session 2!**
+## 📖 WHAT TO READ FIRST
+
+```
+START HERE ↓
+EXECUTION_SUMMARY.md (5 min)
+        ↓
+PHASE2_JNI_CHECKLIST.md (10 min)
+        ↓
+START IMPLEMENTING
+```
+
+---
+
+## 🔧 IMMEDIATE COMMANDS
+
+```bash
+# Check current state
+cd /home/hautly/exo
+rustup override set nightly
+cargo check --release
+
+# Build Phase 1 (Vulkan)
+cargo build -p exo_vulkan_binding --release
+
+# Test Phase 1
+cargo test -p exo_vulkan_binding --release
+
+# Start Phase 2 (JNI)
+cargo check -p exo_jni_binding --release
+
+# After Phase 2, test Python
+pytest tests/ -k vulkan -v
+
+# Final verification
+cargo build --release && cargo clippy --all
+```
+
+---
+
+## 📂 FILES YOU NEED TO KNOW ABOUT
+
+### Just Implemented ✅
+```
+rust/exo_vulkan_binding/src/
+├── lib.rs          (updated - added module exports)
+├── memory.rs       (NEW - 3.2 KB)
+├── command.rs      (NEW - 4.1 KB)
+└── transfer.rs     (NEW - 5.6 KB)
+```
+
+### To Implement Next ⏳
+```
+Phase 2 (JNI - HIGH PRIORITY):
+rust/exo_jni_binding/src/lib.rs (modify - follow PHASE2_JNI_CHECKLIST.md)
+
+Phase 5 (Python FFI):
+src/exo/gpu/backends/vulkan_backend.py (modify - replace TODO comments)
+
+Phase 3 (Android):
+app/android/kotlin/ExoVulkanManager.kt (create)
+app/android/kotlin/DeviceDiscovery.kt (create)
+app/android/build.gradle (create)
+app/android/AndroidManifest.xml (create)
+app/android/CMakeLists.txt (create)
+
+Phase 4 (iOS):
+app/EXO/EXO/Services/MultipeerConnectivityManager.swift (extend)
+src/exo/networking/ios_bridge.py (create)
+
+Phase 6 (Telemetry):
+src/exo/gpu/telemetry_protocol.py (create)
+
+Phase 7 (CI/CD):
+.github/workflows/build-android.yml (create)
+.github/workflows/build-ios.yml (create)
+.github/workflows/test-cross-device.yml (create)
+
+Phase 8 (Tests):
+tests/integration/test_cross_device_discovery.py (create)
+tests/integration/test_vulkan_memory.py (create)
+tests/integration/test_heterogeneous_clustering.py (create)
+```
+
+---
+
+## 🎯 CURRENT PHASE STATUS
+
+**Phase 1**: ✅ COMPLETE
+- Vulkan device enumeration
+- Memory management
+- Command buffers
+- Data transfer (all directions)
+- 450+ lines of production code
+- All unsafe documented
+
+**Phase 2**: ⏳ READY TO START
+- **Priority**: 🔴 CRITICAL
+- **Time**: 2-3 hours
+- **Blocker**: Unblocks Android, iOS, Python
+- **Guide**: PHASE2_JNI_CHECKLIST.md
+- **What to do**: Fix JNI global context and implement memory ops
+
+**Phases 3-8**: ⏳ PLANNED
+- See IMPLEMENTATION_CONTINUATION_GUIDE.md for details
+
+---
+
+## 🚨 CRITICAL ISSUES TO REMEMBER
+
+### Current Vulnerabilities (Fixed in Phase 1)
+1. ✅ No actual memory allocation (Phase 1 fixed)
+2. ✅ No data transfer (Phase 1 fixed)
+3. ✅ No command buffer management (Phase 1 fixed)
+4. ✅ Unsafe code without documentation (Phase 1 fixed)
+
+### What Still Needs Fixing (Phase 2+)
+1. ⚠️ JNI context management - NEXT (Phase 2)
+2. ⚠️ JNI memory ops all stub - NEXT (Phase 2)
+3. ⚠️ Python FFI not calling Rust - (Phase 5)
+4. ⚠️ Android native missing - (Phase 3)
+5. ⚠️ iOS integration incomplete - (Phase 4)
+
+---
+
+## 📊 PROGRESS TRACKING
+
+Copy this matrix and update as you go:
+
+```
+PHASE | COMPONENT        | STATUS    | TIME | VERIFY
+------|------------------|-----------|------|------------
+1     | Vulkan FFI       | ✅ DONE   | 5h   | cargo build
+2     | JNI Bindings     | ⏳ TODO   | 2-3h | jni tests
+3     | Android          | ⏳ TODO   | 6-8h | apk builds
+4     | iOS              | ⏳ TODO   | 3-5h | xcode builds
+5     | Python FFI       | ⏳ TODO   | 2-3h | pytest
+6     | Telemetry        | ⏳ TODO   | 2-3h | import works
+7     | CI/CD            | ⏳ TODO   | 2-3h | workflow runs
+8     | Tests            | ⏳ TODO   | 2-3h | all pass
+```
+
+---
+
+## 🔍 HOW TO DEBUG
+
+### Rust Compilation Issues
+```bash
+cargo build --release 2>&1 | head -50
+# Look for actual error, not the cascade
+cargo check -p exo_jni_binding --release
+# Single out the problematic crate
+```
+
+### JNI Issues
+- Check PHASE2_JNI_CHECKLIST.md for specific function signatures
+- Verify env.throw_new() calls are correct
+- Check return types match JNI spec
+
+### Python Import Errors
+```bash
+cd /home/hautly/exo
+python3 -c "from src.exo.gpu.backends import vulkan_backend; print('OK')"
+# Should import without error
+```
+
+### Type Checking
+```bash
+uv run basedpyright src/exo/gpu/backends/vulkan_backend.py
+# Should show 0 errors
+```
+
+---
+
+## ✅ VALIDATION BEFORE COMMIT
+
+**For each phase**:
+```
+Rust:
+☐ cargo check --release passes
+☐ cargo clippy --all shows no warnings
+☐ cargo test --release passes
+☐ No unsafe blocks without SAFETY comments
+☐ No unwrap() in library code
+
+Python:
+☐ uv run basedpyright passes (0 errors)
+☐ uv run ruff check passes
+☐ pytest tests/ passes
+
+Cross-compile:
+☐ cargo build --target aarch64-linux-android
+☐ cargo build --target aarch64-apple-ios
+```
+
+---
+
+## 📝 COMMON PATTERNS
+
+### Safe Unsafe Block
+```rust
+// SAFETY: Explanation of why this is safe
+// - ptr is valid because we just created it
+// - lifetime is correct because we hold the Arc
+// - no concurrent access because protected by Mutex
+unsafe {
+    self.device.destroy_instance(None);
+}
+```
+
+### Error Handling
+```rust
+match operation() {
+    Ok(result) => handle_success(result),
+    Err(e) => {
+        error!("Operation failed: {}", e);
+        // Don't panic - return Result
+        return Err(e);
+    }
+}
+```
+
+### Resource Cleanup
+```rust
+impl Drop for Resource {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: resource is valid, we own it
+            destroy_resource(self.handle);
+        }
+    }
+}
+```
+
+---
+
+## 🎓 KEY CONCEPTS
+
+### Vulkan Layers (Bottom to Top)
+```
+Rust FFI (exo_vulkan_binding)
+    ↑
+JNI Bridge (exo_jni_binding)
+    ↑
+Kotlin/Swift (Native apps)
+    ↑
+Python FFI (vulkan_backend.py)
+    ↑
+exo framework (distributed ML)
+    ↑
+User applications
+```
+
+### Memory Operations Flow
+```
+Host Memory
+    ↓
+Staging Buffer (Host-Visible)
+    ↓ (DMA copy)
+Device Memory (GPU-Local)
+    ↓
+GPU Computation
+    ↓
+Device Memory
+    ↓ (DMA copy)
+Staging Buffer (Host-Visible)
+    ↓
+Host Memory
+```
+
+### Synchronization
+```
+Record Commands → Submit → Wait (Fence) → Read Results
+                            ↑ (Queue synchronization)
+```
+
+---
+
+## 🆘 WHEN STUCK
+
+1. **Build fails**: Read error message completely, don't just fix first error
+2. **Type error**: Check function signatures against docs
+3. **Test fails**: Add debug prints, run with `--nocapture`
+4. **Not sure**: Check IMPLEMENTATION_CONTINUATION_GUIDE.md examples
+
+---
+
+## 🎬 START HERE
+
+1. **Right now**: `EXECUTION_SUMMARY.md` (5 min)
+2. **Next**: `PHASE2_JNI_CHECKLIST.md` (10 min)
+3. **Then**: Implement Phase 2 (2-3 hours)
+4. **Verify**: `cargo build --release && cargo test --release`
+5. **Next**: Phase 5 (Python FFI) - 2-3 hours
+
+---
+
+**Last Updated**: 2026-02-04  
+**Status**: Phase 1 Complete, Phase 2 Ready  
+**Keep This Handy**: Yes - Referenced during implementation

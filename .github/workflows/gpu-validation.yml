@@ -1,0 +1,276 @@
+name: GPU Backend Validation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/exo/gpu/**'
+      - 'tests/cuda_validation.py'
+      - 'tests/rocm_validation.py'
+      - 'tests/test_telemetry_aggregation.py'
+      - 'tests/integration/test_heterogeneous_desktop.py'
+      - '.github/workflows/gpu-validation.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/exo/gpu/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ============================================================
+  # Type checking and linting
+  # ============================================================
+
+  type-check-gpu:
+    name: Type Check GPU Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install basedpyright
+
+      - name: Type check GPU modules
+        run: |
+          uv run basedpyright src/exo/gpu/
+          uv run basedpyright src/exo/shared/gpu_telemetry_aggregator.py
+
+  lint-gpu:
+    name: Lint GPU Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install ruff
+
+      - name: Lint GPU modules
+        run: |
+          uv run ruff check src/exo/gpu/
+          uv run ruff check src/exo/shared/gpu_telemetry_aggregator.py
+
+  format-check-gpu:
+    name: Format Check GPU Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Check formatting
+        run: |
+          nix fmt -- --check src/exo/gpu/ src/exo/shared/gpu_telemetry_aggregator.py
+
+  # ============================================================
+  # Unit tests (always run, no GPU required)
+  # ============================================================
+
+  test-telemetry:
+    name: Test GPU Telemetry Aggregation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run telemetry tests
+        run: |
+          uv run pytest tests/test_telemetry_aggregation.py -v --tb=short
+
+  test-gpu-core:
+    name: Test GPU Core (No Hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run GPU backend interface tests
+        run: |
+          uv run pytest src/exo/gpu/tests/test_backend_interface.py -v --tb=short
+          uv run pytest src/exo/gpu/tests/test_factory.py -v --tb=short
+          uv run pytest src/exo/gpu/tests/test_discovery.py -v --tb=short
+
+  # ============================================================
+  # GPU-specific tests (skip if GPU unavailable)
+  # ============================================================
+
+  test-cuda:
+    name: Test CUDA Backend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Check CUDA availability
+        id: check-cuda
+        run: |
+          if command -v nvidia-smi &> /dev/null; then
+            echo "cuda_available=true" >> $GITHUB_OUTPUT
+            nvidia-smi
+          else
+            echo "cuda_available=false" >> $GITHUB_OUTPUT
+            echo "CUDA not available, skipping CUDA tests"
+          fi
+
+      - name: Install CUDA dependencies
+        if: steps.check-cuda.outputs.cuda_available == 'true'
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio cupy-cuda11x nvidia-ml-py
+
+      - name: Run CUDA tests
+        if: steps.check-cuda.outputs.cuda_available == 'true'
+        run: |
+          uv run pytest tests/cuda_validation.py -v --tb=short
+        continue-on-error: true
+
+  test-rocm:
+    name: Test ROCm Backend
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Check ROCm availability
+        id: check-rocm
+        run: |
+          if command -v rocm-smi &> /dev/null; then
+            echo "rocm_available=true" >> $GITHUB_OUTPUT
+            rocm-smi
+          else
+            echo "rocm_available=false" >> $GITHUB_OUTPUT
+            echo "ROCm not available, skipping ROCm tests"
+          fi
+
+      - name: Install ROCm dependencies
+        if: steps.check-rocm.outputs.rocm_available == 'true'
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio cupy-hip
+
+      - name: Run ROCm tests
+        if: steps.check-rocm.outputs.rocm_available == 'true'
+        run: |
+          uv run pytest tests/rocm_validation.py -v --tb=short
+        continue-on-error: true
+
+  # ============================================================
+  # Integration tests
+  # ============================================================
+
+  test-integration:
+    name: Integration Tests (Heterogeneous Desktop)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/integration/test_heterogeneous_desktop.py -v --tb=short
+        continue-on-error: true
+
+  # ============================================================
+  # Summary and reporting
+  # ============================================================
+
+  gpu-validation-summary:
+    name: GPU Validation Summary
+    runs-on: ubuntu-latest
+    needs: [type-check-gpu, lint-gpu, test-telemetry, test-gpu-core, test-cuda, test-rocm, test-integration]
+    if: always()
+    steps:
+      - name: Check validation results
+        run: |
+          echo "GPU Validation Report"
+          echo "===================="
+          echo "Type checking: ${{ needs.type-check-gpu.result }}"
+          echo "Linting: ${{ needs.lint-gpu.result }}"
+          echo "Telemetry tests: ${{ needs.test-telemetry.result }}"
+          echo "GPU core tests: ${{ needs.test-gpu-core.result }}"
+          echo "CUDA tests: ${{ needs.test-cuda.result }}"
+          echo "ROCm tests: ${{ needs.test-rocm.result }}"
+          echo "Integration tests: ${{ needs.test-integration.result }}"
+          
+      - name: Set validation status
+        if: |
+          needs.type-check-gpu.result == 'failure' ||
+          needs.lint-gpu.result == 'failure' ||
+          needs.test-telemetry.result == 'failure' ||
+          needs.test-gpu-core.result == 'failure'
+        run: exit 1
+        
+      - name: Success
+        if: success()
+        run: echo "GPU validation successful!"

@@ -4,6 +4,7 @@ members = [
     "rust/networking",
     "rust/exo_pyo3_bindings",
     "rust/exo_vulkan_binding",
+    "rust/exo_jni_binding",
     "rust/util",
 ]
 
@@ -26,6 +27,7 @@ opt-level = 3
 ## Crate members as common dependencies
 networking = { path = "rust/networking" }
 exo_vulkan_binding = { path = "rust/exo_vulkan_binding" }
+exo_jni_binding = { path = "rust/exo_jni_binding" }
 util = { path = "rust/util" }
 
 # Proc-macro authoring tools

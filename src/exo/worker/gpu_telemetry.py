@@ -248,13 +248,14 @@ class GPUTelemetryCollector:
 
         return False
 
-    async def _safe_call(self, coro_func: Callable, *args: Any, **kwargs: Any) -> Any:
+    async def _safe_call(self, coro_func: Callable, *args: Any, **kwargs: Any) -> dict[str, Any]:
         """Safely call async GPU backend method.
 
-        Returns empty dict/None on error rather than raising.
+        Returns empty dict on error rather than raising, ensuring consistent typing.
         """
         try:
-            return await coro_func(*args, **kwargs)
+            result = await coro_func(*args, **kwargs)
+            return result if isinstance(result, dict) else {}
         except Exception as e:
             logger.warning(f"GPU backend call failed: {e}")
-            return None if "return" not in str(coro_func) else {}
+            return {}

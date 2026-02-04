@@ -3,6 +3,10 @@
 //! This module provides raw Vulkan FFI bindings for device detection and compute operations.
 //! It handles device enumeration, memory management, and command buffer submission.
 
+pub mod command;
+pub mod memory;
+pub mod transfer;
+
 use ash::vk;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -108,7 +112,7 @@ impl VulkanContext {
 
             // SAFETY: device_properties is managed and valid
             let device_name = unsafe {
-                std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const i8)
+                std::ffi::CStr::from_ptr(props.device_name.as_ptr() as *const std::ffi::c_char)
                     .to_string_lossy()
                     .into_owned()
             };

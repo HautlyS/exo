@@ -353,7 +353,9 @@ jobs:
           if [ -f "packaging/linux/build-${{ matrix.format }}.sh" ]; then
             bash "packaging/linux/build-${{ matrix.format }}.sh" "${{ needs.detect-changes.outputs.version }}"
           else
-            echo "⚠️  No build script for ${{ matrix.format }}"
+            echo "❌ No build script for ${{ matrix.format }}"
+            echo "Expected: packaging/linux/build-${{ matrix.format }}.sh"
+            exit 1
           fi
 
       - name: Generate checksums
@@ -399,12 +401,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Setup Python
-        run: uv python install 3.13
+      - name: Setup Python 3.13
+        run: |
+          uv python install 3.13
+          which python3.13 || python3 --version
 
       - name: Build Python bundle
         run: |
-          uv sync --locked
+          uv sync --locked --python 3.13
           uv run pyinstaller packaging/pyinstaller/exo.spec
 
       - name: Install NSIS
@@ -545,10 +549,9 @@ jobs:
           distribution: "temurin"
 
       - name: Setup Android NDK
-        uses: ndk-build/setup-android-ndk@v1
+        uses: android-actions/setup-ndk@v3
         with:
           ndk-version: r26d
-          add-to-path: true
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
